@@ -1,5 +1,5 @@
 // Offline cache for Sing to Staff. Bump VERSION on each release.
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const CACHE = 'sing-to-staff-' + VERSION;
 const CORE = [
   './',

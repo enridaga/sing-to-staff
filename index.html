@@ -95,6 +95,20 @@ select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid 
 .btn.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .btn:disabled{opacity:.45;cursor:default}
 pre.tab{font-family:var(--mono);font-size:12.5px;line-height:1.35;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:0;overflow-x:auto;white-space:pre}
+.lib{display:flex;flex-direction:column;gap:10px}
+.saverow{display:flex;gap:8px;flex-wrap:wrap}
+.saverow input{flex:1 1 180px;min-width:0;font:500 15px var(--body);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.tunes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden}
+.tunes:empty{display:none}
+.tune{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;padding:11px 12px;border-top:1px solid var(--line)}
+.tune:first-child{border-top:0}
+.tune.current{box-shadow:inset 3px 0 0 var(--rec)}
+.tune .nm{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tune .meta{grid-column:1;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tune .ops{grid-column:2;grid-row:1 / span 2;display:flex;gap:6px}
+.tune .ops button{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:9px;padding:7px 11px;font:600 13px var(--body);cursor:pointer}
+.tune .ops .del.arm{background:var(--rec);border-color:var(--rec);color:var(--rec-ink)}
+.libempty{font-size:14px;color:var(--muted);margin:0}
 .tips{font-size:14px;color:var(--muted);margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;max-width:62ch}
 section{display:flex;flex-direction:column;gap:10px;min-width:0}
 @media (max-width:420px){.recbtn{width:76px;height:76px}.capture{gap:14px;padding:14px}}
@@ -154,6 +168,16 @@ section{display:flex;flex-direction:column;gap:10px;min-width:0}
       <button class="btn" id="copyNotes">Copy note names</button>
     </div>
     <pre class="tab" id="tabtxt" aria-label="Guitar tab as text"></pre>
+  </section>
+
+  <section class="lib" id="lib">
+    <h2>My tunes</h2>
+    <form class="saverow" id="saveform">
+      <input id="tunename" type="text" maxlength="80" placeholder="Name this tune" aria-label="Tune name" autocomplete="off">
+      <button class="btn primary" id="savebtn" type="submit">Save tune</button>
+    </form>
+    <ul class="tunes" id="tunes"></ul>
+    <p class="libempty" id="libempty">No saved tunes yet. Record one and tap Save tune. Tunes stay on this device.</p>
   </section>
 
   <section>
@@ -467,7 +491,7 @@ function synthExample(){
 
 /* ---------- app ---------- */
 const $=id=>document.getElementById(id);
-const state={x:null, frames:null, raw:[], trace:[], model:null, example:true};
+const state={x:null, frames:null, raw:[], trace:[], model:null, example:true, tuneId:null, label:''};
 const opt={bpm:0, time:'4/4', clef:'auto', octave:0, snap:true, key:'auto'};
 let actx=null, playing=null;
 
@@ -476,15 +500,19 @@ keySel.innerHTML='<option value="auto">Auto</option>'+MAJ_KEYS.map(k=>`<option v
 
 function setStatus(msg,warn){ const s=$('status'); s.textContent=msg; s.classList.toggle('warn',!!warn); }
 
+let gen=0; // newest load wins: a slow analysis never overwrites a tune opened or recorded after it started
 async function analyze(x,label){
-  state.x=x;
+  const my=++gen;
   setStatus('Listening for pitch…');
-  const frames=await trackPitch(x,SR,p=>setStatus(`Listening for pitch… ${Math.round(p*100)}%`));
+  const frames=await trackPitch(x,SR,p=>{ if(my===gen) setStatus(`Listening for pitch… ${Math.round(p*100)}%`); });
+  if(my!==gen) return false;
+  state.x=x; state.tuneId=null; state.label=label;
   const {notes,trace}=segment(frames);
   state.raw=notes; state.trace=trace; state.dur=x.length/SR;
   if(!notes.length){ setStatus('No clear notes found. Try singing louder, closer to the phone, on “da”.',true); }
   else setStatus(`${label}: ${notes.length} notes found.`);
-  build();
+  build(); refreshSaveUI();
+  return true;
 }
 
 function build(){
@@ -628,6 +656,117 @@ $('recbtn').onclick=async()=>{
   }catch(e){}
 };
 
+/* ---------- saved tunes (IndexedDB, on this device only) ---------- */
+const DB_NAME='sing-to-staff', STORE='tunes';
+let dbp=null;
+function db(){
+  if(!dbp) dbp=new Promise((res,rej)=>{
+    if(!window.indexedDB) return rej(new Error('no-idb'));
+    const r=indexedDB.open(DB_NAME,1);
+    r.onupgradeneeded=()=>{ const d=r.result; if(!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE,{keyPath:'id'}).createIndex('created','created'); };
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+  return dbp;
+}
+async function tx(mode,fn){
+  const d=await db();
+  return new Promise((res,rej)=>{ const t=d.transaction(STORE,mode), st=t.objectStore(STORE); let out; const q=fn(st); if(q) q.onsuccess=()=>{ out=q.result; }; t.oncomplete=()=>res(out); t.onerror=()=>rej(t.error); t.onabort=()=>rej(t.error); });
+}
+const tunesAll=()=>tx('readonly',st=>st.getAll());
+const tuneGet=id=>tx('readonly',st=>st.get(id));
+const tunePut=t=>tx('readwrite',st=>st.put(t));
+const tuneDel=id=>tx('readwrite',st=>st.delete(id));
+
+function toPCM16(x){ const o=new Int16Array(x.length); for(let i=0;i<x.length;i++){ const v=Math.max(-1,Math.min(1,x[i])); o[i]=v<0?v*32768:v*32767; } return o.buffer; }
+function fromPCM16(buf){ const a=new Int16Array(buf), o=new Float32Array(a.length); for(let i=0;i<a.length;i++) o[i]=a[i]/32768; return o; }
+const fmtDate=ts=>{ try{ return new Date(ts).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); }catch(e){ return new Date(ts).toISOString().slice(0,16).replace('T',' '); } };
+const defaultName=()=>'Tune '+fmtDate(Date.now());
+const keyName=k=>!k?'':k.endsWith('m')? pretty(k.slice(0,-1).toLowerCase())+' minor' : pretty(k.toLowerCase())+' major';
+let libOK=true;
+
+function refreshSaveUI(){
+  const btn=$('savebtn'), can=libOK && !state.example && state.raw.length>0;
+  btn.disabled=!can;
+  btn.textContent= state.tuneId ? 'Update tune' : 'Save tune';
+  if(!state.tuneId) $('tunename').value='';
+}
+
+async function renderLib(){
+  const ul=$('tunes'), empty=$('libempty');
+  let list=[];
+  try{ list=await tunesAll(); }
+  catch(e){ libOK=false; empty.textContent='This browser does not allow saving tunes here (private mode or storage blocked).'; ul.innerHTML=''; refreshSaveUI(); return; }
+  list.sort((a,b)=>b.created-a.created);
+  empty.hidden=list.length>0;
+  ul.innerHTML='';
+  for(const t of list){
+    const li=document.createElement('li'); li.className='tune'+(t.id===state.tuneId?' current':'');
+    const nm=document.createElement('div'); nm.className='nm'; nm.textContent=t.name;
+    const meta=document.createElement('div'); meta.className='meta';
+    meta.textContent=[fmtDate(t.created), keyName(t.key), t.noteCount+' notes', (t.duration||0).toFixed(1)+' s'].filter(Boolean).join(' · ');
+    const ops=document.createElement('div'); ops.className='ops';
+    const open=document.createElement('button'); open.type='button'; open.textContent='Open'; open.setAttribute('aria-label','Open '+t.name);
+    open.onclick=()=>openTune(t.id);
+    const del=document.createElement('button'); del.type='button'; del.className='del'; del.textContent='Delete'; del.setAttribute('aria-label','Delete '+t.name);
+    let armT=null;
+    del.onclick=async()=>{
+      if(!del.classList.contains('arm')){ del.classList.add('arm'); del.textContent='Tap to confirm'; armT=setTimeout(()=>{ del.classList.remove('arm'); del.textContent='Delete'; },3000); return; }
+      clearTimeout(armT);
+      try{ await tuneDel(t.id); if(state.tuneId===t.id){ state.tuneId=null; refreshSaveUI(); } setStatus(`Deleted “${t.name}”.`); }
+      catch(e){ setStatus('Could not delete that tune. Try again.',true); }
+      renderLib();
+    };
+    ops.append(open,del); li.append(nm,meta,ops); ul.append(li);
+  }
+}
+
+$('saveform').onsubmit=async e=>{
+  e.preventDefault();
+  if($('savebtn').disabled) return;
+  const name=($('tunename').value.trim()||defaultName()).slice(0,80);
+  const m=state.model, now=Date.now();
+  const prev= state.tuneId ? await tuneGet(state.tuneId).catch(()=>null) : null;
+  const t={
+    id: state.tuneId || (now.toString(36)+Math.random().toString(36).slice(2,8)),
+    name, created: prev?prev.created:now, updated: now,
+    sr: SR, duration: state.dur, audio: prev?prev.audio:toPCM16(state.x),
+    notes: state.raw, trace: state.trace, opt: {...opt},
+    key: m?m.key:'', bpm: m?m.bpm:0,
+    noteCount: m? m.bars.flat().filter(p=>p.type==='note'&&!p.tieFromPrev).length : state.raw.length
+  };
+  try{
+    await tunePut(t);
+    state.tuneId=t.id; $('tunename').value=name; refreshSaveUI();
+    setStatus(prev?`Updated “${name}”.`:`Saved “${name}” on this device.`);
+    try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(_){}
+  }catch(err){
+    setStatus(err && err.name==='QuotaExceededError' ? 'The device is out of storage for tunes. Delete some and try again.' : 'Could not save the tune. Try again.', true);
+  }
+  renderLib();
+};
+
+function applyOpt(o){
+  Object.assign(opt,{bpm:0,time:'4/4',clef:'auto',octave:0,snap:true,key:'auto'},o||{});
+  $('bpm').value=opt.bpm||''; $('bpmauto').setAttribute('aria-pressed',opt.bpm?'false':'true');
+  $('time').value=opt.time; $('clef').value=opt.clef; $('oct').value=String(opt.octave); $('key').value=opt.key; $('snap').checked=opt.snap;
+}
+
+async function openTune(id){
+  let t; try{ t=await tuneGet(id); }catch(e){ t=null; }
+  if(!t){ setStatus('That tune could not be found.',true); renderLib(); return; }
+  stopPlay(); ++gen;
+  state.x=fromPCM16(t.audio); state.dur=t.duration||state.x.length/SR;
+  state.raw=t.notes||[]; state.trace=t.trace||[]; state.example=false; state.tuneId=t.id; state.label=t.name;
+  $('example').hidden=true;
+  applyOpt(t.opt); build();
+  refreshSaveUI(); $('tunename').value=t.name;
+  setStatus(`Opened “${t.name}”.`);
+  renderLib();
+  $('summary').scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'start'});
+}
+
+renderLib(); refreshSaveUI();
+
 /* theme + resize redraw */
 let rz; addEventListener('resize',()=>{ clearTimeout(rz); rz=setTimeout(build,150); });
 try{ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>drawRoll()); }catch(e){}
@@ -636,8 +775,7 @@ new MutationObserver(()=>drawRoll()).observe(document.documentElement,{attribute
 /* start with the example */
 (async()=>{
   if(!window.Vex){ $('sheet').innerHTML='<div class="empty">The notation library did not load. Check your connection and reload.</div>'; }
-  await analyze(synthExample(),'Example');
-  setStatus('Up to 30 seconds. One note at a time works best.');
+  if(await analyze(synthExample(),'Example')) setStatus('Up to 30 seconds. One note at a time works best.');
 })();
 </script>
 

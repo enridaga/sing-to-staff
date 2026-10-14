@@ -25,6 +25,12 @@ Everything runs in the browser; no audio leaves the device.
 
 You can override tempo, time signature, clef (treble, bass, guitar 8vb), octave, key and tuning correction.
 
+## My tunes
+
+Name a tune and tap **Save tune** to keep it. Saved tunes are listed with date, key, note count and length; **Open** brings back the staff, tab, pitch view and playback with the settings you saved, and **Delete** (tap twice to confirm) removes it.
+
+Tunes are stored only on this device, in the browser's IndexedDB (audio as 16 kHz 16-bit PCM, about 1 MB per 30 s). They are not uploaded anywhere. Clearing the site's data or uninstalling the app deletes them.
+
 ## Tips
 
 - Sing on "da" or "ta" so repeated notes are separated.
